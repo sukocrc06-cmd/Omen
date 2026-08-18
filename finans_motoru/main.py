@@ -47,7 +47,19 @@ def parse_args():
     p.add_argument("--plot", action="store_true", help="Grafik PNG üret")
     p.add_argument("--demo", action="store_true", help="İnternete bağlanmadan sentetik veriyle çalış")
     p.add_argument("--out-prefix", type=str, default="rapor", help="Çıktı dosyaları için ön ek")
+    p.add_argument("--params-file", type=str, default=None,
+                    help="optimize.py çıktısı JSON dosyası - indikatör periyotlarını, "
+                         "sinyal eşiklerini ve risk parametrelerini bu dosyadan uygular "
+                         "(verilmezse motorun varsayılanları kullanılır)")
     return p.parse_args()
+
+
+def _load_params(path: str | None) -> dict:
+    if not path:
+        return {}
+    import json
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def main():
@@ -66,13 +78,24 @@ def main():
             sys.exit(1)
     print(f"   -> {len(df)} bar alındı ({df.index[0]} .. {df.index[-1]})")
 
+    params = _load_params(args.params_file)
+    if params:
+        print(f"   -> Özel parametre dosyası uygulanıyor: {args.params_file}")
+
     print("[2/4] İndikatörler ve sinyaller hesaplanıyor...")
-    signals_df = compute_signals(df)
+    cfg = {k: params[k] for k in ("ema_fast", "ema_slow", "ema_trend", "rsi_len") if k in params}
+    signals_df = compute_signals(
+        df, cfg=cfg or None,
+        buy_th=params.get("buy_th", 0.30),
+        sell_th=params.get("sell_th", -0.30),
+        strong_th=params.get("strong_th", 0.60),
+    )
 
     trailing_mult = args.trailing_atr_mult
     if trailing_mult is None:
-        trailing_mult = default_trailing_atr_mult(interval)
-        print(f"   -> Trailing-stop ATR çarpanı otomatik seçildi ({interval} için: {trailing_mult}x)")
+        trailing_mult = params.get("trailing_atr_mult") or default_trailing_atr_mult(interval)
+        print(f"   -> Trailing-stop ATR çarpanı: {trailing_mult}x "
+              f"({'params-file' if 'trailing_atr_mult' in params else interval + ' için otomatik'})")
     elif trailing_mult <= 0:
         trailing_mult = None
 
@@ -82,10 +105,10 @@ def main():
         initial_capital=args.capital,
         commission_bps=args.commission_bps,
         allow_short=args.allow_short,
-        stop_loss_pct=args.stop_loss,
+        stop_loss_pct=params.get("stop_loss_pct", args.stop_loss),
         take_profit_pct=args.take_profit,
         trailing_atr_mult=trailing_mult,
-        position_size_pct=args.position_size,
+        position_size_pct=params.get("position_size_pct", args.position_size),
     )
 
     rec = latest_recommendation(signals_df)

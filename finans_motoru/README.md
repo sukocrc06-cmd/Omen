@@ -207,6 +207,55 @@ entegrasyonu da ayrıca kurabilirim.
 
 ---
 
+## 5b. 1 Saatlik İşlem İçin İleri Seviye Kullanım: Parametre Optimizasyonu ve Çoklu Hisse Tarama
+
+Bu iki araç, motoru "körü körüne varsayılan ayarlarla" değil, geçmiş veriye
+göre daha dikkatli ayarlanmış biçimde kullanmak isteyenler içindir.
+
+### `optimize.py` — Walk-Forward Parametre Arama
+
+Belirli bir hissede/zaman aralığında, EMA periyotları, RSI uzunluğu, AL/SAT
+eşikleri, trailing-stop çarpanı, stop-loss ve pozisyon büyüklüğü gibi
+parametreleri rastgele dener; veriyi 3 ayrı zaman dilimine bölüp her adayın
+**üç dilimde de** tutarlı çalışıp çalışmadığını ölçer (tek dönemde "şanslı"
+görünen ama başka dönemde çöken parametreleri eler).
+
+```bash
+python optimize.py --ticker THYAO.IS --interval 1h --trials 60
+```
+
+Çıktı: `en_iyi_parametreler.json` (en tutarlı parametre seti).
+
+> Bu, geçmişte daha tutarlı çalışan parametreyi bulur; **gelecekte de aynı
+> performansı vereceğinin garantisi değildir.** Farklı dönemlerde tekrar
+> test edilmesi önerilir.
+
+### `screen_tickers.py` — Aynı Kurallarla Çoklu Hisse Karşılaştırma
+
+Aynı zaman aralığı ve (isteğe bağlı olarak `optimize.py` çıktısı) parametre
+setiyle birden fazla hisseyi tarar; hangi hissenin geçmişte bu kurallarla
+daha istikrarlı sonuç verdiğini karşılaştırmalı bir tabloda gösterir.
+
+```bash
+python screen_tickers.py --tickers "THYAO.IS,ASELSAN.IS,SISE.IS,KCHOL.IS,BIMAS.IS" \
+    --interval 1h --capital 2000 --params-file en_iyi_parametreler.json
+```
+
+Çıktı: `hisse_taramasi.csv` + konsolda sıralı karşılaştırma tablosu.
+
+### `main.py` ile optimize edilmiş parametreleri kullanmak
+
+```bash
+python main.py --ticker THYAO.IS --interval 1h --params-file en_iyi_parametreler.json --plot
+```
+
+> ⚠️ **Önemli:** Bu üç araç da sadece geçmiş veri üzerinde çalışır. Hiçbiri
+> "gelecekte şu kadar kazanırsınız" diye bir tahmin üretmez ve üretemez.
+> Amaçları, sistemin geçmişte ne kadar TUTARLI çalıştığını ölçmek ve bu
+> bilgiyle daha bilinçli bir karar vermenize yardımcı olmaktır.
+
+---
+
 ## 6. Riskler ve Sorumluluk Reddi
 
 - Bu sistem **geçmiş veriye dayalı istatistiksel bir karar destek aracıdır**,

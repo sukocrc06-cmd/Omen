@@ -100,9 +100,12 @@ def _score_volume(df: pd.DataFrame) -> pd.Series:
     return (direction * confirm).fillna(0.0)
 
 
-def compute_signals(df: pd.DataFrame, cfg: dict | None = None, weights: dict | None = None) -> pd.DataFrame:
+def compute_signals(df: pd.DataFrame, cfg: dict | None = None, weights: dict | None = None,
+                     buy_th: float = 0.30, sell_th: float = -0.30, strong_th: float = 0.60) -> pd.DataFrame:
     """
     df: OHLCV DataFrame (open, high, low, close, volume).
+    buy_th/sell_th/strong_th: sinyal eşikleri (bkz. _hysteresis_labels). optimize.py
+        tarafından zaman aralığına özel ayarlanabilir hale getirmek için parametrelendirildi.
     Dönüş: indikatörler + 'score' (-1..1), 'signal' (AL/SAT/BEKLE), 'confidence' (0-100).
     """
     weights = {**DEFAULT_WEIGHTS, **(weights or {})}
@@ -136,7 +139,7 @@ def compute_signals(df: pd.DataFrame, cfg: dict | None = None, weights: dict | N
     )
     out["confidence"] = (agree_ratio * out["score"].abs().clip(0, 1) * 100).round(1)
 
-    out["signal"] = _hysteresis_labels(out["score"])
+    out["signal"] = _hysteresis_labels(out["score"], buy_th=buy_th, sell_th=sell_th, strong_th=strong_th)
 
     return out
 
