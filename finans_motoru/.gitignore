@@ -1,0 +1,12 @@
+# Sanal ortam ve önbellek
+.venv/
+__pycache__/
+*.pyc
+
+# Motorun ürettiği çıktı dosyaları (her çalıştırmada yeniden oluşur)
+rapor_*.csv
+rapor_*.png
+karsilastirma.csv
+
+# Ortam / gizli bilgi dosyaları (varsa)
+.env

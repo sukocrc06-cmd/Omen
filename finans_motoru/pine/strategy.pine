@@ -1,0 +1,174 @@
+// ============================================================================
+// Çoklu İndikatör Konfluens Al/Sat Motoru - Pine Script v5
+// Python motorundaki (signal_engine.py) mantığın TradingView karşılığıdır:
+// EMA kesişimi + trend filtresi + MACD + RSI + Bollinger + Stokastik + Hacim
+// ağırlıklı puanlama ile AL / SAT / GÜÇLÜ AL / GÜÇLÜ SAT sinyalleri üretir.
+//
+// KULLANIM:
+// 1) TradingView'de bir grafik açın (örn. THYAO, BTCUSDT).
+// 2) Alt menüden "Pine Editor" (Pine Editör) sekmesine geçin.
+// 3) Bu dosyanın tamamını kopyalayıp editöre yapıştırın.
+// 4) "Add to Chart" (Grafiğe Ekle) tıklayın.
+// 5) Strateji testi için üstteki "Strategy Tester" sekmesinden performansı
+//    inceleyebilirsiniz (bu script hem strategy() hem de göstergesel
+//    plot/alert özellikleriyle yazıldı).
+// 6) Sinyal geldiğinde bildirim almak isterseniz üç nokta menüsünden
+//    "Add Alert" (Alarm Ekle) ile "AL Sinyali" / "SAT Sinyali" koşullarını seçin.
+//
+// NOT: Bu script yatırım tavsiyesi değildir; geçmiş performans gelecekteki
+// sonuçları garanti etmez.
+// ============================================================================
+
+//@version=5
+strategy("Konfluens AL/SAT Motoru", overlay=true, initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.05)
+
+// ---------------------------------------------------------------------------
+// Girdiler
+// ---------------------------------------------------------------------------
+emaFastLen   = input.int(9,  "EMA Hızlı", group="Trend")
+emaSlowLen   = input.int(21, "EMA Yavaş", group="Trend")
+emaTrendLen  = input.int(50, "EMA Trend Filtresi", group="Trend")
+
+rsiLen       = input.int(14, "RSI Periyodu", group="Momentum")
+macdFast     = input.int(12, "MACD Hızlı", group="Momentum")
+macdSlow     = input.int(26, "MACD Yavaş", group="Momentum")
+macdSignal   = input.int(9,  "MACD Sinyal", group="Momentum")
+
+bbLen        = input.int(20, "Bollinger Periyodu", group="Volatilite")
+bbMult       = input.float(2.0, "Bollinger Std Sapma", group="Volatilite")
+
+stochK       = input.int(14, "Stokastik %K", group="Momentum")
+stochD       = input.int(3,  "Stokastik %D", group="Momentum")
+stochSmooth  = input.int(3,  "Stokastik Smooth", group="Momentum")
+
+volLen       = input.int(20, "Hacim Ortalaması", group="Hacim")
+
+buyThresh    = input.float(0.28, "AL Skor Eşiği", group="Sinyal", step=0.01)
+sellThresh   = input.float(-0.28, "SAT Skor Eşiği", group="Sinyal", step=0.01)
+strongThresh = input.float(0.55, "GÜÇLÜ Sinyal Eşiği", group="Sinyal", step=0.01)
+
+useStopLoss  = input.bool(true, "Stop-Loss Kullan", group="Risk")
+slPct        = input.float(3.0, "Stop-Loss %", group="Risk") / 100
+useTakeProfit= input.bool(true, "Take-Profit Kullan", group="Risk")
+tpPct        = input.float(6.0, "Take-Profit %", group="Risk") / 100
+
+// ---------------------------------------------------------------------------
+// İndikatörler
+// ---------------------------------------------------------------------------
+emaFast  = ta.ema(close, emaFastLen)
+emaSlow  = ta.ema(close, emaSlowLen)
+emaTrend = ta.ema(close, emaTrendLen)
+
+rsi = ta.rsi(close, rsiLen)
+
+[macdLine, macdSig, macdHist] = ta.macd(close, macdFast, macdSlow, macdSignal)
+
+bbMid   = ta.sma(close, bbLen)
+bbDev   = ta.stdev(close, bbLen)
+bbUpper = bbMid + bbMult * bbDev
+bbLower = bbMid - bbMult * bbDev
+
+kRaw = ta.stoch(close, high, low, stochK)
+kSm  = ta.sma(kRaw, stochSmooth)
+dSm  = ta.sma(kSm, stochD)
+
+volSma = ta.sma(volume, volLen)
+
+// ---------------------------------------------------------------------------
+// Alt skorlar (-1 .. 1)
+// ---------------------------------------------------------------------------
+diff = emaFast - emaSlow
+crossUp   = ta.crossover(emaFast, emaSlow)
+crossDown = ta.crossunder(emaFast, emaSlow)
+scoreEma = crossUp ? 1.0 : crossDown ? -1.0 : (diff > 0 ? 1.0 : diff < 0 ? -1.0 : 0.0)
+
+scoreTrend = close > emaTrend ? 1.0 : close < emaTrend ? -1.0 : 0.0
+
+macdRising = macdHist > macdHist[1]
+scoreMacd = macdHist > 0 ? (macdRising ? 1.0 : 0.5) : macdHist < 0 ? (not macdRising ? -1.0 : -0.5) : 0.0
+
+scoreRsi = rsi < 30 ? 1.0 : rsi > 70 ? -1.0 : (rsi > 55 and rsi <= 70) ? 0.4 : (rsi >= 30 and rsi < 45) ? -0.4 : 0.0
+
+bbWidth = bbUpper - bbLower
+bbPos = bbWidth != 0 ? (close - bbMid) / (bbWidth / 2) : 0.0
+scoreBb = -math.max(math.min(bbPos, 1.5), -1.5) / 1.5
+
+stochCrossUp   = ta.crossover(kSm, dSm) and kSm < 50
+stochCrossDown = ta.crossunder(kSm, dSm) and kSm > 50
+scoreStochBase = stochCrossUp ? 1.0 : stochCrossDown ? -1.0 : 0.0
+scoreStoch = kSm < 20 ? scoreStochBase + 0.5 : kSm > 80 ? scoreStochBase - 0.5 : scoreStochBase
+
+volConfirm = volume > volSma * 1.2
+priceDir = close > close[1] ? 1.0 : close < close[1] ? -1.0 : 0.0
+scoreVol = volConfirm ? priceDir : 0.0
+
+// ---------------------------------------------------------------------------
+// Ağırlıklı toplam skor
+// ---------------------------------------------------------------------------
+wEma = 1.2, wTrend = 0.8, wMacd = 1.0, wRsi = 1.0, wBb = 0.7, wStoch = 0.7, wVol = 0.6
+totalW = wEma + wTrend + wMacd + wRsi + wBb + wStoch + wVol
+
+rawScore = (scoreEma*wEma + scoreTrend*wTrend + scoreMacd*wMacd + scoreRsi*wRsi +
+     scoreBb*wBb + scoreStoch*wStoch + scoreVol*wVol) / totalW
+score = math.max(math.min(rawScore, 1.0), -1.0)
+
+isBuy  = score >= buyThresh
+isSell = score <= sellThresh
+isStrongBuy  = score >= strongThresh
+isStrongSell = score <= -strongThresh
+
+// ---------------------------------------------------------------------------
+// Görselleştirme
+// ---------------------------------------------------------------------------
+plot(emaFast, "EMA Hızlı", color=color.orange)
+plot(emaSlow, "EMA Yavaş", color=color.blue)
+plot(emaTrend, "EMA Trend", color=color.gray)
+p1 = plot(bbUpper, "BB Üst", color=color.new(color.purple, 70))
+p2 = plot(bbLower, "BB Alt", color=color.new(color.purple, 70))
+fill(p1, p2, color=color.new(color.purple, 92))
+
+plotshape(isBuy and not isBuy[1], title="AL", location=location.belowbar,
+     style=shape.triangleup, color=color.green, size=size.small)
+plotshape(isSell and not isSell[1], title="SAT", location=location.abovebar,
+     style=shape.triangledown, color=color.red, size=size.small)
+plotshape(isStrongBuy and not isStrongBuy[1], title="GÜÇLÜ AL", location=location.belowbar,
+     style=shape.labelup, color=color.new(color.green, 0), text="GÜÇLÜ AL", textcolor=color.white, size=size.tiny)
+plotshape(isStrongSell and not isStrongSell[1], title="GÜÇLÜ SAT", location=location.abovebar,
+     style=shape.labeldown, color=color.new(color.red, 0), text="GÜÇLÜ SAT", textcolor=color.white, size=size.tiny)
+
+// ---------------------------------------------------------------------------
+// Strateji giriş/çıkış (Strategy Tester ile backtest için)
+// ---------------------------------------------------------------------------
+if isBuy and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long)
+
+if isSell and strategy.position_size > 0
+    strategy.close("Long")
+
+if useStopLoss or useTakeProfit
+    slPrice = strategy.position_avg_price * (1 - slPct)
+    tpPrice = strategy.position_avg_price * (1 + tpPct)
+    strategy.exit("SL/TP", "Long",
+         stop  = useStopLoss   ? slPrice : na,
+         limit = useTakeProfit ? tpPrice : na)
+
+// ---------------------------------------------------------------------------
+// Alarmlar
+// ---------------------------------------------------------------------------
+alertcondition(isBuy and not isBuy[1], title="AL Sinyali", message="AL sinyali oluştu: {{ticker}} @ {{close}}")
+alertcondition(isSell and not isSell[1], title="SAT Sinyali", message="SAT sinyali oluştu: {{ticker}} @ {{close}}")
+
+// ---------------------------------------------------------------------------
+// Bilgi paneli
+// ---------------------------------------------------------------------------
+var table info = table.new(position.top_right, 2, 3, border_width=1)
+if barstate.islast
+    table.cell(info, 0, 0, "Skor", text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 0, str.tostring(math.round(score*100)/100), text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 0, 1, "RSI", text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 1, str.tostring(math.round(rsi*10)/10), text_color=color.white, bgcolor=color.gray)
+    sigTxt = isStrongBuy ? "GÜÇLÜ AL" : isBuy ? "AL" : isStrongSell ? "GÜÇLÜ SAT" : isSell ? "SAT" : "BEKLE"
+    table.cell(info, 0, 2, "Sinyal", text_color=color.white, bgcolor=color.gray)
+    table.cell(info, 1, 2, sigTxt, text_color=color.white, bgcolor=color.gray)
