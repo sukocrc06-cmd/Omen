@@ -36,6 +36,9 @@ def parse_args():
     p.add_argument("--commission-bps", type=float, default=5.0, help="İşlem başına komisyon (baz puan)")
     p.add_argument("--allow-short", action="store_true", help="Short pozisyonlara izin ver")
     p.add_argument("--stop-loss", type=float, default=0.03, help="Stop-loss yüzdesi (0.03 = %%3)")
+    p.add_argument("--position-size", type=float, default=0.20,
+                    help="Her işlemde sermayenin ne kadarının kullanılacağı (0.20 = %%20). "
+                         "1.0 = tüm sermaye (yüksek risk, önerilmez)")
     p.add_argument("--take-profit", type=float, default=None,
                     help="Sabit take-profit yüzdesi (varsayılan: kapalı, trailing-stop kullanılır)")
     p.add_argument("--trailing-atr-mult", type=float, default=None,
@@ -82,6 +85,7 @@ def main():
         stop_loss_pct=args.stop_loss,
         take_profit_pct=args.take_profit,
         trailing_atr_mult=trailing_mult,
+        position_size_pct=args.position_size,
     )
 
     rec = latest_recommendation(signals_df)

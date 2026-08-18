@@ -39,6 +39,9 @@ with st.sidebar:
     commission_bps = st.number_input("Komisyon (bps)", value=5.0, step=1.0)
     allow_short = st.checkbox("Short pozisyona izin ver", value=False)
     stop_loss = st.slider("Stop-loss (%)", 0.0, 15.0, 3.0) / 100
+    position_size = st.slider("Pozisyon büyüklüğü (sermayenin %'si)", 5, 100, 20,
+                                help="Her işlemde sermayenin ne kadarı kullanılsın. Düşük değer "
+                                     "= daha az risk, daha düşük max drawdown.") / 100
     use_fixed_tp = st.checkbox("Sabit take-profit kullan (kapalıysa trailing-stop kullanılır)", value=False)
     take_profit = (st.slider("Take-profit (%)", 0.0, 30.0, 6.0) / 100) if use_fixed_tp else None
     trailing_atr_mult = st.slider("Trailing-stop ATR çarpanı", 0.0, 6.0, 3.0,
@@ -64,6 +67,7 @@ if run_btn:
                 stop_loss_pct=stop_loss or None,
                 take_profit_pct=take_profit or None,
                 trailing_atr_mult=trailing_atr_mult or None,
+                position_size_pct=position_size,
             )
             rec = latest_recommendation(signals_df)
         except Exception as e:

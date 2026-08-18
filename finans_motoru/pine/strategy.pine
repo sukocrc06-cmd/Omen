@@ -21,8 +21,11 @@
 
 //@version=5
 strategy("Konfluens AL/SAT Motoru", overlay=true, initial_capital=10000,
-     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=20,
      commission_type=strategy.commission.percent, commission_value=0.05)
+// Not: default_qty_value=20 -> her işlemde sermayenin %100'ü yerine %20'si
+// kullanılır. Tam sermayeyle (%100) işlem yapmak, art arda gelen birkaç
+// kayıp işlemde hesabı büyük oranda eritebilir (bkz. README - risk notu).
 
 // ---------------------------------------------------------------------------
 // Girdiler

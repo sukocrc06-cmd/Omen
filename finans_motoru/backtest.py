@@ -9,6 +9,12 @@ Kurallar:
   (allow_short=True ise ayrıca short pozisyon aç).
 - Opsiyonel stop-loss / take-profit (ATR bazlı ya da yüzde bazlı).
 - Komisyon (bps) ve kayma (slippage) parametrik.
+- Pozisyon büyüklüğü (position_size_pct): her işlemde sermayenin ne kadarının
+  riske atılacağını belirler. VARSAYILAN %20 — sermayenin tamamını (%100) tek
+  işleme yatırmak, art arda gelen birkaç kayıp işlemde hesabı büyük ölçüde
+  eritebilir (bkz. README - risk notu; TradingView Pine tarafında THYAO'nun
+  30+ yıllık geçmişinde %100 pozisyon büyüklüğüyle max drawdown %98.6 iken,
+  %20 ile %32.2'ye düşüyor).
 """
 
 from __future__ import annotations
@@ -22,6 +28,8 @@ class Trade:
     entry_time: pd.Timestamp
     entry_price: float
     direction: str  # 'long' | 'short'
+    cash_amount: float = 0.0      # işlem açılırken pozisyona girmeyen, nakitte kalan sermaye
+    invested_amount: float = 0.0  # pozisyona ayrılan sermaye (position_size_pct kadarı)
     exit_time: pd.Timestamp | None = None
     exit_price: float | None = None
     reason: str | None = None
@@ -35,12 +43,32 @@ class Trade:
             return (self.exit_price / self.entry_price) - 1
         return (self.entry_price / self.exit_price) - 1
 
+    def equity_after_exit(self) -> float:
+        """Bu işlem kapandıktan sonraki toplam sermaye (nakit + pozisyon sonucu)."""
+        return self.cash_amount + self.invested_amount * (1 + self.pnl_pct)
+
+    def equity_mark_to_market(self, price: float) -> float:
+        """Pozisyon hâlâ açıkken, mevcut fiyata göre anlık toplam sermaye."""
+        unreal = (price / self.entry_price - 1) if self.direction == "long" \
+            else (self.entry_price / price - 1)
+        return self.cash_amount + self.invested_amount * (1 + unreal)
+
 
 @dataclass
 class BacktestResult:
     trades: list = field(default_factory=list)
     equity_curve: pd.Series = None
     metrics: dict = field(default_factory=dict)
+
+
+def _open_position(capital: float, ts, price: float, direction: str,
+                    commission: float, position_size_pct: float) -> Trade:
+    invested_amount = capital * position_size_pct
+    cash_amount = capital - invested_amount
+    entry_price = price * (1 + commission) if direction == "long" else price * (1 - commission)
+    return Trade(entry_time=ts, entry_price=entry_price, direction=direction,
+                 cash_amount=cash_amount, invested_amount=invested_amount,
+                 extreme_price=entry_price)
 
 
 def run_backtest(
@@ -51,6 +79,7 @@ def run_backtest(
     stop_loss_pct: float | None = 0.03,
     take_profit_pct: float | None = None,
     trailing_atr_mult: float | None = 3.0,
+    position_size_pct: float = 0.20,
 ) -> BacktestResult:
     """
     df: signal_engine.compute_signals() çıktısı (en az 'close', 'signal' ve
@@ -64,6 +93,8 @@ def run_backtest(
         kaç katı geriye düşülünce çıkılacağını belirler (chandelier exit).
         Bu, trend sürdüğü sürece pozisyonu açık tutup kârı "takip ederek"
         korumayı sağlar. None ile kapatılabilir.
+    position_size_pct: her işlemde sermayenin yüzde kaçının riske atılacağı
+        (0.20 = %20). 1.0 = sermayenin tamamı (yüksek risk, önerilmez).
     """
     commission = commission_bps / 10_000.0
     capital = initial_capital
@@ -108,54 +139,46 @@ def run_backtest(
             if exit_reason:
                 exit_price = price * (1 - commission) if position.direction == "long" else price * (1 + commission)
                 position.exit_time, position.exit_price, position.reason = ts, exit_price, exit_reason
-                capital *= (1 + position.pnl_pct)
+                capital = position.equity_after_exit()
                 trades.append(position)
                 position = None
 
         # Sinyale göre giriş / çıkış
         if position is None:
             if sig in buy_labels:
-                entry_price = price * (1 + commission)
-                position = Trade(entry_time=ts, entry_price=entry_price, direction="long",
-                                  extreme_price=entry_price)
+                position = _open_position(capital, ts, price, "long", commission, position_size_pct)
             elif allow_short and sig in sell_labels:
-                entry_price = price * (1 - commission)
-                position = Trade(entry_time=ts, entry_price=entry_price, direction="short",
-                                  extreme_price=entry_price)
+                position = _open_position(capital, ts, price, "short", commission, position_size_pct)
         else:
             if position.direction == "long" and sig in sell_labels:
                 exit_price = price * (1 - commission)
                 position.exit_time, position.exit_price, position.reason = ts, exit_price, "signal"
-                capital *= (1 + position.pnl_pct)
+                capital = position.equity_after_exit()
                 trades.append(position)
                 position = None
-                if allow_short and sig in sell_labels:
-                    entry_price = price * (1 - commission)
-                    position = Trade(entry_time=ts, entry_price=entry_price, direction="short",
-                                      extreme_price=entry_price)
+                if allow_short:
+                    position = _open_position(capital, ts, price, "short", commission, position_size_pct)
             elif position.direction == "short" and sig in buy_labels:
                 exit_price = price * (1 + commission)
                 position.exit_time, position.exit_price, position.reason = ts, exit_price, "signal"
-                capital *= (1 + position.pnl_pct)
+                capital = position.equity_after_exit()
                 trades.append(position)
                 position = None
 
         # Açık pozisyonun mark-to-market değeriyle equity güncelle
         if position is not None:
-            unreal = (price / position.entry_price - 1) if position.direction == "long" \
-                else (position.entry_price / price - 1)
-            equity.append(capital * (1 + unreal))
+            equity.append(position.equity_mark_to_market(price))
         else:
             equity.append(capital)
 
     # Dönem sonunda açık pozisyon varsa kapat
     if position is not None:
         last_price = df["close"].iloc[-1]
-        exit_price = last_price * (1 - commission if position.direction == "long" else -commission)
+        exit_price = last_price * (1 - commission) if position.direction == "long" else last_price * (1 + commission)
         position.exit_time = df.index[-1]
         position.exit_price = exit_price
         position.reason = "period_end"
-        capital *= (1 + position.pnl_pct)
+        capital = position.equity_after_exit()
         trades.append(position)
 
     equity_curve = pd.Series(equity, index=df.index, name="equity")

@@ -33,6 +33,8 @@ def parse_args():
     p.add_argument("--capital", type=float, default=10_000.0)
     p.add_argument("--commission-bps", type=float, default=5.0)
     p.add_argument("--stop-loss", type=float, default=0.03)
+    p.add_argument("--position-size", type=float, default=0.20,
+                    help="Her işlemde sermayenin ne kadarının kullanılacağı (0.20 = %%20)")
     p.add_argument("--take-profit", type=float, default=None)
     p.add_argument("--trailing-atr-mult", type=float, default=None,
                     help="Boş bırakılırsa her zaman aralığı kendi otomatik çarpanını kullanır")
@@ -71,6 +73,7 @@ def main():
                 stop_loss_pct=args.stop_loss,
                 take_profit_pct=args.take_profit,
                 trailing_atr_mult=trailing_mult,
+                position_size_pct=args.position_size,
             )
             rec = latest_recommendation(signals_df)
             m = result.metrics
