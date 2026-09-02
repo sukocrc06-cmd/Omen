@@ -131,6 +131,30 @@ def obv(df: pd.DataFrame) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
+# Üst zaman dilimi (higher-timeframe) trend teyidi
+# ---------------------------------------------------------------------------
+
+def higher_tf_trend(df: pd.DataFrame, rule: str, ema_len: int = 50) -> pd.Series:
+    """
+    Kapanış fiyatını daha büyük bir zaman dilimine (rule, ör. '1D', '4h')
+    yeniden örnekleyip o zaman diliminde EMA'ya göre trend yönünü (+1/-1)
+    hesaplar ve orijinal (düşük zaman dilimi) index'e geri hizalar.
+
+    Look-ahead sızıntısını önlemek için: bir üst zaman dilimi barı ancak
+    KAPANDIKTAN sonra bilinir. Bu yüzden trend bir üst-TF bar geriye
+    kaydırılır (shift(1)) ve ancak öyle düşük zaman dilimine forward-fill
+    edilir - yani bir bar şu an içinde bulunduğu üst-TF barın değil, bir
+    önceki TAMAMLANMIŞ üst-TF barın trendini görür.
+    """
+    htf_close = df["close"].resample(rule, label="right", closed="right").last().dropna()
+    if len(htf_close) < ema_len + 2:
+        return pd.Series(np.nan, index=df.index)
+    htf_ema = ema(htf_close, ema_len)
+    htf_trend = np.sign(htf_close - htf_ema).shift(1)
+    return htf_trend.reindex(df.index, method="ffill")
+
+
+# ---------------------------------------------------------------------------
 # Ana fonksiyon: tüm indikatörleri tek seferde hesapla
 # ---------------------------------------------------------------------------
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from indicators import add_all_indicators
+from indicators import add_all_indicators, higher_tf_trend
 
 
 DEFAULT_WEIGHTS = {
@@ -27,6 +27,23 @@ DEFAULT_WEIGHTS = {
     "stochastic": 0.7,     # stokastik kesişim + bölge
     "volume": 0.6,         # hacim teyidi
 }
+
+# ADX rejim filtresi: hangi bileşenlerin "trend takibi" (ADX yükseldikçe
+# güçlenmeli) ve hangilerinin "ortalamaya dönüş" (ADX düştükçe, yani piyasa
+# yatayken güçlenmeli) mantığında olduğunu belirtir. Listede olmayan
+# bileşenler (rsi, macd'nin momentum kısmı, stochastic, volume) rejimden
+# bağımsız sabit ağırlıkla kalır.
+TREND_FOLLOWING_COMPONENTS = {"ema_cross", "trend_filter"}
+MEAN_REVERSION_COMPONENTS = {"bollinger"}
+
+ADX_LOW = 18.0   # bu ve altı: piyasa yatay/trendsiz kabul edilir
+ADX_HIGH = 28.0  # bu ve üstü: piyasa net trendli kabul edilir
+
+# Karşı-trend (üst zaman dilimiyle çelişen) sinyallerin ne kadar bastırılacağı.
+# 1.0 = hiç bastırma, 0.0 = tamamen sustur. Düşük bir değer (tam kapatmak
+# yerine) seçildi ki çok güçlü confluence'lı karşı-trend sinyaller yine de
+# (zayıflamış olarak) görülebilsin.
+HTF_COUNTERTREND_DAMPEN = 0.4
 
 
 def _score_ema_cross(df: pd.DataFrame) -> pd.Series:
@@ -59,14 +76,16 @@ def _score_macd(df: pd.DataFrame) -> pd.Series:
 
 def _score_rsi(df: pd.DataFrame) -> pd.Series:
     r = df["rsi"]
-    score = pd.Series(0.0, index=df.index)
-    score = score.mask(r < 30, 1.0)     # aşırı satım -> al eğilimi
-    score = score.mask(r > 70, -1.0)    # aşırı alım -> sat eğilimi
-    score = score.mask((r >= 45) & (r <= 55), 0.0)
-    mid_bull = (r > 55) & (r <= 70)
-    mid_bear = (r >= 30) & (r < 45)
-    score = score.mask(mid_bull, 0.4)
-    score = score.mask(mid_bear, -0.4)
+    # Bölge sınırlarında (30/45/55/70) ani sıçrama yerine, her bölgenin
+    # merkezi arasında lineer enterpolasyon yapılır -> aynı "aşırı satımda
+    # dönüş beklentisi (+), hafif ayı (-), nötr (0), hafif boğa (+), aşırı
+    # alımda dönüş beklentisi (-)" mantığı korunur ama eşiğe yakın barlarda
+    # skor artık aniden zıplamak yerine yumuşak geçer (histerezisin gereksiz
+    # tetiklenmesini azaltır).
+    anchors_r = [15, 37.5, 50, 62.5, 85]
+    anchors_s = [1.0, -0.4, 0.0, 0.4, -1.0]
+    score = pd.Series(np.interp(r, anchors_r, anchors_s), index=df.index)
+    score[r.isna()] = np.nan
     return score
 
 
@@ -97,17 +116,77 @@ def _score_volume(df: pd.DataFrame) -> pd.Series:
     # yüksek hacim, mevcut fiyat hareketinin yönünü teyit eder (çarpan gibi davranır)
     direction = np.sign(df["close"].diff())
     confirm = (ratio > 1.2).astype(float)
-    return (direction * confirm).fillna(0.0)
+    price_vol_score = (direction * confirm).fillna(0.0)
+
+    # OBV'nin kısa vadeli eğimi (son 5 bar): tek bir bardaki hacim
+    # sıçramasından çok daha az gürültülü bir "para akışı" teyidi sağlar.
+    obv_slope = df["obv"].diff(5)
+    obv_score = np.sign(obv_slope).fillna(0.0)
+
+    return (0.6 * price_vol_score + 0.4 * obv_score).clip(-1, 1)
+
+
+def _adx_regime_multiplier(adx: pd.Series, component: str) -> pd.Series:
+    """
+    ADX'e göre bileşen ağırlığını 0.5x-1.0x (ya da 1.0x-0.5x) arasında
+    dinamik ölçekler. ADX hiç kullanılmıyordu (sadece raporlanıyordu); burada
+    "rejim filtresi" olarak devreye sokuluyor:
+    - Trend-takip bileşenleri (ema_cross, trend_filter): ADX düşükken
+      (yatay piyasa) whipsaw riski yüksek olduğu için ağırlıkları yarıya
+      iner; ADX yükseldikçe (net trend) tam ağırlığa döner.
+    - Ortalamaya-dönüş bileşeni (bollinger): tam tersi - net trendde fiyat
+      banda yaslanıp kalabildiği için (yanlış SAT/AL üretir) ağırlığı düşer;
+      yatay piyasada tam ağırlıkta kalır.
+    Diğer bileşenler (rsi, macd, stochastic, volume) rejimden etkilenmez.
+    """
+    if component not in TREND_FOLLOWING_COMPONENTS and component not in MEAN_REVERSION_COMPONENTS:
+        return pd.Series(1.0, index=adx.index)
+
+    adx_filled = adx.fillna(ADX_LOW)  # veri başındaki NaN'larda nötr (düşük) davran
+    trend_strength = ((adx_filled - ADX_LOW) / (ADX_HIGH - ADX_LOW)).clip(0, 1)
+
+    if component in TREND_FOLLOWING_COMPONENTS:
+        return 0.5 + 0.5 * trend_strength
+    return 1.0 - 0.5 * trend_strength
+
+
+def _infer_htf_rule(index: pd.DatetimeIndex) -> str | None:
+    """Bar aralığından otomatik olarak makul bir üst zaman dilimi seçer."""
+    if len(index) < 3:
+        return None
+    delta_minutes = (index[1] - index[0]).total_seconds() / 60
+    if delta_minutes <= 0:
+        return None
+    if delta_minutes <= 30:       # 1m/5m/15m/30m -> 4 saatlik trend
+        return "4h"
+    if delta_minutes <= 240:      # 1h/2h/4h -> günlük trend
+        return "1D"
+    if delta_minutes <= 1440:     # günlük -> haftalık trend
+        return "1W"
+    return None  # zaten haftalık/daha büyükse üst zaman dilimi teyidi anlamsız
 
 
 def compute_signals(df: pd.DataFrame, cfg: dict | None = None, weights: dict | None = None,
-                     buy_th: float = 0.30, sell_th: float = -0.30, strong_th: float = 0.60) -> pd.DataFrame:
+                     buy_th: float = 0.30, sell_th: float = -0.30, strong_th: float = 0.60,
+                     htf_confirm: bool = False) -> pd.DataFrame:
     """
     df: OHLCV DataFrame (open, high, low, close, volume).
     buy_th/sell_th/strong_th: sinyal eşikleri (bkz. _hysteresis_labels). optimize.py
         tarafından zaman aralığına özel ayarlanabilir hale getirmek için parametrelendirildi.
+    htf_confirm: True ise, bar aralığından otomatik seçilen bir üst zaman
+        diliminin (ör. 1 saatlik barlar için günlük) trendiyle çelişen
+        sinyaller bastırılır (bkz. HTF_COUNTERTREND_DAMPEN). cfg içinde
+        "htf_rule" (ör. "1D", "4h") verilerek elle ezilebilir, "htf_ema_len"
+        ile üst-TF trend EMA uzunluğu değiştirilebilir.
+        VARSAYILAN KAPALI: THYAO.IS/1h üzerinde gerçek veriyle test edildiğinde
+        (bkz. README) günlük EMA(50) trendi çok yavaş/gecikmeli kaldığı için
+        tam olarak en kârlı işlemleri (erken trend dönüşlerini) bastırıp
+        Sharpe'ı düşürdü - birden fazla dampen/EMA-uzunluğu kombinasyonuyla
+        doğrulandı. Yine de farklı hisse/aralıkta işe yarayabilir; denemek
+        isteyenler için parametre olarak açık bırakıldı.
     Dönüş: indikatörler + 'score' (-1..1), 'signal' (AL/SAT/BEKLE), 'confidence' (0-100).
     """
+    cfg = cfg or {}
     weights = {**DEFAULT_WEIGHTS, **(weights or {})}
     out = add_all_indicators(df, cfg)
 
@@ -121,12 +200,32 @@ def compute_signals(df: pd.DataFrame, cfg: dict | None = None, weights: dict | N
         "volume": _score_volume(out),
     }
 
-    total_weight = sum(weights.values())
-    weighted_sum = sum(components[k].fillna(0) * weights[k] for k in components)
+    # ADX rejim filtresi: her bileşenin ağırlığını bar bazında ölçekler
+    # (bkz. _adx_regime_multiplier). Böylece toplam ağırlık da bar bazında
+    # değişir; normalize etmek için payda da Series olarak hesaplanır.
+    weight_series = {
+        k: weights[k] * _adx_regime_multiplier(out["adx"], k) for k in components
+    }
+    total_weight = sum(weight_series.values())
+    weighted_sum = sum(components[k].fillna(0) * weight_series[k] for k in components)
     score = (weighted_sum / total_weight).clip(-1, 1)
 
     # Ham skoru kısa bir hareketli ortalamayla yumuşat (tek bar'lık gürültüyü azaltır)
     smooth_score = score.rolling(window=3, min_periods=1).mean()
+
+    # Üst zaman dilimi trend teyidi: ana trendin tersine düşen sinyalleri bastır.
+    htf_rule = cfg.get("htf_rule", "auto") if htf_confirm else None
+    if htf_rule == "auto":
+        htf_rule = _infer_htf_rule(out.index)
+    if htf_rule:
+        htf_trend = higher_tf_trend(out, htf_rule, cfg.get("htf_ema_len", 50))
+        out["htf_trend"] = htf_trend
+        score_sign = np.sign(smooth_score)
+        countertrend = htf_trend.notna() & (score_sign != 0) & (score_sign != htf_trend)
+        smooth_score = smooth_score.mask(countertrend, smooth_score * HTF_COUNTERTREND_DAMPEN)
+    else:
+        out["htf_trend"] = np.nan
+
     out["score"] = smooth_score
     out["score_raw"] = score
     for name, series in components.items():

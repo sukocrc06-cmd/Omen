@@ -64,20 +64,34 @@ TREND_PARAM_SPACE = {
     "position_size_pct": [0.20, 0.30, 0.40],        # trend modunda biraz daha büyük pay (daha riskli)
 }
 
+# MUHAFAZAKAR (conservative) modu: amaç yüksek getiri değil, KÜÇÜK ama İSTİKRARLI
+# kazançlarla düşük düşüşle (drawdown) sermayeyi yavaşça büyütmek - büyük bir
+# hesaba (ör. 50.000 TL) "az ama sürekli" mantığıyla yaklaşan kullanıcılar için.
+# Bunun bedeli: robust/trend modlarına göre daha az işlem ve muhtemelen daha
+# düşük toplam getiri - bu bilinçli bir tercih, bir eksiklik değil.
+CONSERVATIVE_PARAM_SPACE = {
+    "buy_th": [0.30, 0.35, 0.40],                   # daha yüksek eşik -> sadece güçlü confluence'ta gir
+    "strong_th": [0.55, 0.60, 0.65, 0.70],
+    "trailing_atr_mult": [3.0, 4.0, 5.0],           # dar trailing -> kârı erken kilitle
+    "stop_loss_pct": [0.02, 0.025, 0.03],           # dar stop -> tek işlemde küçük kayıp
+    "position_size_pct": [0.08, 0.10, 0.12, 0.15],  # sermayenin küçük bir kısmı -> düşük tekil-işlem riski
+}
+
 
 def sample_params(rng: random.Random, mode: str = "robust") -> dict:
     ema_fast = rng.choice(PARAM_SPACE["ema_fast"])
     ema_slow = rng.choice([v for v in PARAM_SPACE["ema_slow"] if v > ema_fast])
     ema_trend = rng.choice([v for v in PARAM_SPACE["ema_trend"] if v > ema_slow])
-    buy_th = rng.choice(PARAM_SPACE["buy_th"])
-    strong_th = rng.choice([v for v in PARAM_SPACE["strong_th"] if v > buy_th])
+    rsi_len = rng.choice(PARAM_SPACE["rsi_len"])
 
     if mode == "trend":
+        buy_th = rng.choice(PARAM_SPACE["buy_th"])
+        strong_th = rng.choice([v for v in PARAM_SPACE["strong_th"] if v > buy_th])
         return {
             "ema_fast": ema_fast,
             "ema_slow": ema_slow,
             "ema_trend": ema_trend,
-            "rsi_len": rng.choice(PARAM_SPACE["rsi_len"]),
+            "rsi_len": rsi_len,
             "buy_th": buy_th,
             "sell_th": rng.choice(TREND_PARAM_SPACE["sell_th"]),  # asimetrik: girişten bağımsız, sert eşik
             "strong_th": strong_th,
@@ -86,11 +100,29 @@ def sample_params(rng: random.Random, mode: str = "robust") -> dict:
             "position_size_pct": rng.choice(TREND_PARAM_SPACE["position_size_pct"]),
         }
 
+    if mode == "conservative":
+        buy_th = rng.choice(CONSERVATIVE_PARAM_SPACE["buy_th"])
+        strong_th = rng.choice([v for v in CONSERVATIVE_PARAM_SPACE["strong_th"] if v > buy_th])
+        return {
+            "ema_fast": ema_fast,
+            "ema_slow": ema_slow,
+            "ema_trend": ema_trend,
+            "rsi_len": rsi_len,
+            "buy_th": buy_th,
+            "sell_th": -buy_th,  # simetrik: kâr/zarar fark etmeksizin çabuk çık, riski uzatma
+            "strong_th": strong_th,
+            "trailing_atr_mult": rng.choice(CONSERVATIVE_PARAM_SPACE["trailing_atr_mult"]),
+            "stop_loss_pct": rng.choice(CONSERVATIVE_PARAM_SPACE["stop_loss_pct"]),
+            "position_size_pct": rng.choice(CONSERVATIVE_PARAM_SPACE["position_size_pct"]),
+        }
+
+    buy_th = rng.choice(PARAM_SPACE["buy_th"])
+    strong_th = rng.choice([v for v in PARAM_SPACE["strong_th"] if v > buy_th])
     return {
         "ema_fast": ema_fast,
         "ema_slow": ema_slow,
         "ema_trend": ema_trend,
-        "rsi_len": rng.choice(PARAM_SPACE["rsi_len"]),
+        "rsi_len": rsi_len,
         "buy_th": buy_th,
         "sell_th": -buy_th,
         "strong_th": strong_th,
@@ -151,17 +183,23 @@ def evaluate(df: pd.DataFrame, params: dict, min_trades_per_chunk: int = 4) -> d
     robustness = float(sharpes.mean() - sharpes.std())
     avg_return = float(np.mean(returns))
     avg_buyhold = float(np.mean(buyholds))
+    worst_dd = float(np.min(drawdowns))
     # trend'i ne kadar "yakaladık" - sadece pozitif al-tut dönemlerinde anlamlı
     capture_ratio = round(avg_return / avg_buyhold, 3) if avg_buyhold > 0.5 else None
+    # muhafazakar sıralama: tutarlılığı (robustness) ödüllendirir, düşüşü
+    # (drawdown) doğrudan cezalandırır - "yüksek getiri ama sert düşüş" bir
+    # adayı, "orta getiri ama sığ düşüş" bir adaya karşı elemeyi hedefler.
+    conservative_score = round(robustness - abs(worst_dd) / 20, 3)
     return {
         "params": params,
         "avg_sharpe": round(float(sharpes.mean()), 3),
         "sharpe_std": round(float(sharpes.std()), 3),
         "robustness_score": round(robustness, 3),
+        "conservative_score": conservative_score,
         "avg_return_pct": round(avg_return, 2),
         "avg_buyhold_pct": round(avg_buyhold, 2),
         "capture_ratio": capture_ratio,
-        "worst_drawdown_pct": round(float(np.min(drawdowns)), 2),
+        "worst_drawdown_pct": round(worst_dd, 2),
         "min_trades_in_a_chunk": int(min(trades_counts)),
         "chunk_sharpes": [round(float(x), 3) for x in sharpes],
         "chunk_returns_pct": [round(float(x), 2) for x in returns],
@@ -178,12 +216,15 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", type=str, default="en_iyi_parametreler.json")
     p.add_argument("--top", type=int, default=5)
-    p.add_argument("--mode", type=str, default="robust", choices=["robust", "trend"],
+    p.add_argument("--mode", type=str, default="robust", choices=["robust", "trend", "conservative"],
                     help="robust: düşük riskli/tutarlı ayar arar (varsayılan). "
                          "trend: büyük trendleri daha çok yakalamak için çıkışları gevşetir "
-                         "- karşılığında daha büyük düşüşlere (drawdown) açık olur.")
-    p.add_argument("--max-drawdown", type=float, default=40.0,
-                    help="(sadece --mode trend) Bu yüzdeden daha kötü düşüşü olan adaylar elenir")
+                         "- karşılığında daha büyük düşüşlere (drawdown) açık olur. "
+                         "conservative: küçük ama İSTİKRARLI kazançla düşük düşüş (drawdown) hedefler "
+                         "- büyük sermayeyi 'az ama sürekli' mantığıyla büyütmek isteyenler için.")
+    p.add_argument("--max-drawdown", type=float, default=None,
+                    help="Bu yüzdeden daha kötü düşüşü olan adaylar elenir "
+                         "(varsayılan: trend modunda %%40, conservative modunda %%15, robust modunda kapalı)")
     return p.parse_args()
 
 
@@ -203,6 +244,10 @@ def main():
             sys.exit(1)
         print(f"{len(df)} bar alındı ({df.index[0]} .. {df.index[-1]})")
 
+    max_drawdown = args.max_drawdown
+    if max_drawdown is None:
+        max_drawdown = {"trend": 40.0, "conservative": 15.0}.get(args.mode)
+
     rng = random.Random(args.seed)
     seen = set()
     results = []
@@ -216,7 +261,7 @@ def main():
         tried += 1
         r = evaluate(df, params)
         if r is not None:
-            if args.mode == "trend" and r["worst_drawdown_pct"] < -args.max_drawdown:
+            if max_drawdown is not None and r["worst_drawdown_pct"] < -max_drawdown:
                 pass  # çok büyük düşüş -> ele
             else:
                 results.append(r)
@@ -232,7 +277,7 @@ def main():
         results.sort(key=lambda r: r["avg_return_pct"], reverse=True)
         top = results[: args.top]
         print("\n================ EN ÇOK GETİRİ/TREND YAKALAYAN ADAYLAR (TREND MODU) ================")
-        print(f"(--max-drawdown %{args.max_drawdown}'den kötü olanlar zaten elendi)")
+        print(f"(--max-drawdown %{max_drawdown}'den kötü olanlar zaten elendi)")
         for i, r in enumerate(top, 1):
             capture = f"%{round(r['capture_ratio']*100,1)}" if r['capture_ratio'] is not None else "n/a"
             print(f"\n#{i}  avg_getiri=%{r['avg_return_pct']}  avg_al_tut=%{r['avg_buyhold_pct']}  "
@@ -245,6 +290,22 @@ def main():
               "%100'e ne kadar yakınsa o kadar iyi 'trend yakalama', ama bu adaylar robust modun "
               "adaylarından DAHA BÜYÜK düşüşlere (drawdown) sahiptir - bilerek. Küçük bir hesapla "
               "(2000 TL gibi) bu daha büyük duygusal ve parasal risk demektir.")
+    elif args.mode == "conservative":
+        results.sort(key=lambda r: r["conservative_score"], reverse=True)
+        top = results[: args.top]
+        print("\n================ EN İSTİKRARLI / DÜŞÜK-DÜŞÜŞLÜ ADAYLAR (MUHAFAZAKAR MOD) ================")
+        print(f"(--max-drawdown %{max_drawdown}'den kötü olanlar zaten elendi)")
+        for i, r in enumerate(top, 1):
+            print(f"\n#{i}  conservative_score={r['conservative_score']}  avg_sharpe={r['avg_sharpe']} "
+                  f"(sapma={r['sharpe_std']})  avg_getiri=%{r['avg_return_pct']}  "
+                  f"en_kotu_dusus=%{r['worst_drawdown_pct']}")
+            print(f"    Bölüm bazında Sharpe: {r['chunk_sharpes']}  |  Getiri%: {r['chunk_returns_pct']}")
+            print(f"    Parametreler: {json.dumps(r['params'], ensure_ascii=False)}")
+        print("\nÖNEMLİ: Bu mod en yüksek getiriyi DEĞİL, en düşük düşüş + en tutarlı Sharpe "
+              "kombinasyonunu arar - amaç büyük bir sermayeyi (ör. 50.000 TL) küçük ama düzenli "
+              "kazançlarla, duygusal olarak katlanılabilir düşüşlerle yıllar içinde büyütmektir. "
+              "Yine de robust/trend modlarından FARKI derece meselesidir; hiçbiri kayıp riskini "
+              "sıfırlamaz.")
     else:
         results.sort(key=lambda r: r["robustness_score"], reverse=True)
         top = results[: args.top]
@@ -258,8 +319,11 @@ def main():
 
     best = top[0]
     out_path = args.out
-    if args.mode == "trend" and args.out == "en_iyi_parametreler.json":
-        out_path = "en_iyi_parametreler_trend.json"
+    if args.out == "en_iyi_parametreler.json":
+        if args.mode == "trend":
+            out_path = "en_iyi_parametreler_trend.json"
+        elif args.mode == "conservative":
+            out_path = "en_iyi_parametreler_muhafazakar.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(best["params"], f, ensure_ascii=False, indent=2)
     print(f"\nEn iyi parametre seti kaydedildi: {out_path}")

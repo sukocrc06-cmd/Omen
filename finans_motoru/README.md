@@ -159,6 +159,56 @@ göre değiştirebilirsiniz.
 
 ---
 
+## 4b. Motor Güncellemeleri (Eylül 2026): ADX rejim filtresi, OBV, HTF teyidi
+
+Python motoruna (`indicators.py` / `signal_engine.py`) beş iyileştirme
+eklendi. Hepsi THYAO.IS / 1 saatlik gerçek veriyle (2023-10 .. 2026-09,
+6249 bar) ölçüldü:
+
+1. **ADX rejim filtresi** — daha önce hesaplanıp hiç kullanılmayan ADX,
+   artık bileşen ağırlıklarını bar bazında ölçekliyor: piyasa yatayken
+   (ADX < 18) trend-takip bileşenleri (EMA kesişim, EMA50 filtresi)
+   zayıflar; net trend varken (ADX > 28) güçlenir. Bollinger tam tersi
+   yönde ölçeklenir (yatayken güçlü, trendliyken zayıf) — çünkü trend
+   döneminde fiyat üst/alt banda yaslanıp kalıp yanlış SAT/AL üretebiliyor.
+2. **OBV entegrasyonu** — hacim skoru artık sadece anlık hacim oranına değil,
+   OBV'nin 5 barlık eğimine de bakıyor (%60/%40 karışım) — tek barlık hacim
+   sıçramalarına karşı daha az gürültülü.
+3. **RSI skorlaması yumuşatıldı** — eski sabit basamaklı (30/45/55/70 sınırlarında
+   ani sıçrayan) skor, aynı mantığı koruyan ama bölge sınırlarında yumuşak
+   geçiş yapan lineer enterpolasyona çevrildi (histerezisin gereksiz
+   tetiklenmesini azaltır).
+4. **Üst zaman dilimi (HTF) trend teyidi — VARSAYILAN KAPALI** — bar
+   aralığından otomatik seçilen bir üst zaman diliminin (1 saatlik barlar
+   için günlük) EMA(50) trendiyle çelişen sinyalleri bastırma özelliği
+   eklendi (`compute_signals(..., htf_confirm=True)`), ANCAK gerçek veriyle
+   test edildiğinde günlük EMA(50) çok yavaş/gecikmeli kaldığı için tam
+   olarak en kârlı işlemleri (erken trend dönüşlerini) bastırıp Sharpe'ı
+   düşürdü — birden fazla dampen gücü ve EMA uzunluğu kombinasyonuyla
+   doğrulandı, hepsi kapalı duruma göre daha kötü sonuç verdi. Bu yüzden
+   **varsayılan olarak kapalı** bırakıldı; farklı hisse/aralıkta işe
+   yarayabileceği için parametre olarak açık tutuldu (`htf_confirm=True`,
+   `cfg={"htf_rule": "1D", "htf_ema_len": 50}`).
+5. **Yeni `--mode conservative` (muhafazakar) optimizasyon modu** — bkz.
+   aşağıdaki 5b ve 5d.
+
+**Ölçülen etki (THYAO.IS / 1h, aynı eski parametrelerle, sadece motor
+değişikliği):**
+
+| | Eski motor | Yeni motor (ADX+OBV+RSI, HTF kapalı) |
+|---|---|---|
+| Sharpe (yıllıklandırılmış) | 0.27 | 0.70 |
+| Max düşüş | -%23.6 | -%5.1 |
+| Profit factor | 1.07 | 1.17 |
+| Kazanma oranı | %34.4 | %37.4 |
+
+Parametreler de yeni motora göre yeniden optimize edildiğinde (bkz. 5b)
+Sharpe 1.2'ye, max düşüş -%3'e kadar iyileşiyor. Bu geçmiş veridir,
+gelecekte aynı sonucu garanti etmez — ama yön net: **risk (özellikle
+max düşüş) belirgin şekilde azaldı.**
+
+---
+
 ## 5. Bu Sistemi Başkalarına Nasıl Sunarız? (Dağıtım Seçenekleri)
 
 Sıradan kullanıcılar için en kolaydan en gelişmişe doğru üç yol:
@@ -226,6 +276,16 @@ python optimize.py --ticker THYAO.IS --interval 1h --trials 60
 
 Çıktı: `en_iyi_parametreler.json` (en tutarlı parametre seti).
 
+Üç mod vardır (`--mode`):
+- **`robust`** (varsayılan) — tutarlılığı (ortalama Sharpe eksi bölümler arası
+  sapma) maksimize eder.
+- **`trend`** — çıkışları kasıtlı gevşetip büyük trendleri daha çok yakalamayı
+  hedefler; karşılığında daha büyük düşüşlere (drawdown) açıktır.
+- **`conservative`** (muhafazakar) — en yüksek getiriyi DEĞİL, en düşük düşüş +
+  en tutarlı Sharpe kombinasyonunu arar (küçük pozisyon büyüklüğü, dar
+  stop-loss, sadece güçlü confluence'ta giriş). Çıktısı
+  `en_iyi_parametreler_muhafazakar.json`. Bkz. 5d.
+
 > Bu, geçmişte daha tutarlı çalışan parametreyi bulur; **gelecekte de aynı
 > performansı vereceğinin garantisi değildir.** Farklı dönemlerde tekrar
 > test edilmesi önerilir.
@@ -253,6 +313,170 @@ python main.py --ticker THYAO.IS --interval 1h --params-file en_iyi_parametreler
 > "gelecekte şu kadar kazanırsınız" diye bir tahmin üretmez ve üretemez.
 > Amaçları, sistemin geçmişte ne kadar TUTARLI çalıştığını ölçmek ve bu
 > bilgiyle daha bilinçli bir karar vermenize yardımcı olmaktır.
+
+---
+
+## 5c. Telegram / E-posta Bildirimleri
+
+Sinyal DEĞİŞTİĞİNDE (ör. BEKLE -> AL) telefonuna Telegram mesajı ve/veya
+mailine e-posta gönderen `notify.py` scripti. Sinyal aynı kaldığı sürece
+tekrar tekrar bildirim göndermez.
+
+### Kurulum (Telegram - 5 dakika)
+
+1. Telegram'da **BotFather** ile konuş (arama kutusuna "BotFather" yaz).
+2. `/newbot` yaz, botuna bir isim ver. Sana bir **bot token** verecek
+   (örn. `123456789:ABCdefGhIJKlmNoPQRstuVwxyZ`).
+3. Oluşturduğun bota Telegram'dan bir mesaj gönder (örn. "merhaba") - bu
+   önemli, botun sana mesaj atabilmesi için önce senin ona yazman gerekiyor.
+4. Tarayıcıda şunu aç (TOKEN kısmını kendi tokenınla değiştir):
+   `https://api.telegram.org/botTOKEN/getUpdates`
+   Dönen metinde `"chat":{"id":123456789,...}` gibi bir sayı arayın - bu sizin
+   **chat_id**'inizdir.
+5. `notify_config.example.json` dosyasını kopyalayıp `notify_config.json`
+   adıyla kaydedin, `bot_token` ve `chat_id` alanlarını doldurun.
+   (`notify_config.json` `.gitignore`'da - GitHub'a asla yüklenmez.)
+
+Test:
+```bash
+python notify.py --ticker THYAO.IS --interval 1h --config notify_config.json --test
+```
+`--test` her durumda bildirim gönderir (bağlantıyı doğrulamak için). Gerçek
+kullanımda `--test` OLMADAN çalıştırın - o zaman sadece sinyal değiştiğinde
+bildirim gelir.
+
+### Kurulum (E-posta - opsiyonel)
+
+Gmail kullanıyorsanız normal şifreniz çalışmaz; **Uygulama Şifresi** (App
+Password) oluşturmanız gerekir: Google Hesabı → Güvenlik → 2 Adımlı Doğrulama
+(açık olmalı) → Uygulama Şifreleri. `notify_config.json` içinde
+`email.enabled` değerini `true` yapıp bilgileri doldurun.
+
+### Otomatik çalıştırma (Windows Görev Zamanlayıcı)
+
+`notify.py` kendi kendine periyodik çalışmaz - Windows'un **Görev
+Zamanlayıcı**sı (Task Scheduler) ile her saat başı tetiklenmesi gerekir:
+
+1. Başlat menüsünden "Görev Zamanlayıcı" (Task Scheduler) açın.
+2. Sağdan **Temel Görev Oluştur** (Create Basic Task) tıklayın.
+3. İsim verin (ör. "Finans Motoru Bildirim"), **Günlük** (Daily) seçin.
+4. Tekrar aralığını her gün, ardından görev özelliklerinden **Tetikleyiciler**
+   (Triggers) sekmesinde "Görevi her şu kadar sürede bir tekrarla" (Repeat
+   task every) = **1 saat**, süre = **Süresiz** (Indefinitely) olarak ayarlayın.
+5. **Eylem** (Action) = "Bir programı başlat" (Start a program):
+   - Program/script: `C:\Users\sukru\OneDrive\Desktop\Omen\finans_motoru\.venv\Scripts\python.exe`
+     (venv'in tam yolu; `py` yerine venv'in python.exe'sini kullanmak daha güvenilirdir)
+   - Bağımsız değişkenler (Arguments):
+     `notify.py --ticker THYAO.IS --interval 1h --config notify_config.json --params-file en_iyi_parametreler.json`
+   - Başlangıç konumu (Start in): `C:\Users\sukru\OneDrive\Desktop\Omen\finans_motoru`
+6. Kaydedin. İsterseniz görevi sağ tıklayıp **Çalıştır** (Run) ile hemen test edin.
+
+> ⚠️ BIST piyasası kapalıyken (akşam/hafta sonu) veri değişmeyeceği için
+> gereksiz sorgu yapmamak isterseniz görevi sadece işlem saatlerinde (ör.
+> 10:00-18:00, Pazartesi-Cuma) çalışacak şekilde de sınırlandırabilirsiniz
+> (Tetikleyiciler sekmesinde "Başlangıç" ve "Bitiş" saatleri girilebilir).
+
+---
+
+## 5d. "Az Kazanç, Sürekli Birikim" — 50.000 TL için Muhafazakar Mod
+
+Bu bölüm, büyük getiri değil **düşük ama istikrarlı, yıllar içinde biriken**
+kazanç hedefleyen kullanıcılar için `--mode conservative` çıktısının nasıl
+kullanılacağını ve gerçek veriyle ölçülen sonuçları özetler. Bu bir yatırım
+tavsiyesi değildir — sadece motorun bu risk profiline göre nasıl
+ayarlanacağını gösterir.
+
+### Ne değişiyor?
+
+`en_iyi_parametreler_muhafazakar.json` (robust/trend'e göre):
+- **Pozisyon büyüklüğü küçük** (~%8-15, robust'ta %15-25) — tek işlemin
+  sermayeye etkisi sınırlı kalır.
+- **Giriş eşiği yüksek** (buy_th 0.3-0.4, robust'ta 0.2-0.3) — sadece güçlü
+  confluence'ta (çoğu indikatör aynı yönde hemfikirken) işleme girilir, daha
+  az ama daha "temiz" sinyal.
+- **Dar stop-loss / trailing** — kayıplar erken kesilir, kârlar erken
+  kilitlenir; büyük trendleri sonuna kadar takip etmek yerine güvenlik
+  önceliklidir.
+
+### Gerçek veriyle ölçülen sonuç (2023-10 .. 2026-09, ~2.9 yıl, 50.000 TL)
+
+```bash
+python main.py --ticker THYAO.IS --interval 1h --capital 50000 \
+    --params-file en_iyi_parametreler_muhafazakar.json
+```
+
+| Hisse | Sonuç bakiye | Getiri | Max düşüş | Sharpe | İşlem sayısı | Kazanma oranı |
+|---|---|---|---|---|---|---|
+| THYAO.IS | 51.407 TL | +%2.81 | **-%1.5** | 1.14 | 149 | %36.2 |
+| ASELS.IS (aynı parametreler, ayrı optimize edilmeden) | 58.098 TL | +%16.2 | -%3.9 | 4.09 | 146 | %39.0 |
+
+ASELS.IS satırı THYAO için bulunan parametrelerle çalıştırıldı (yeniden
+optimize edilmedi) — amaç, ayarların tek hisseye "ezberlenmediğini" kabaca
+görmekti. Sonuçlar hisseye göre büyük fark gösterebilir; her zaman kendi
+sembolünüzle `optimize.py --mode conservative` çalıştırın.
+
+**Yorum:** ~%1-6/yıl aralığında, ama tek haneli düşüklükte düşüşle (drawdown)
+—yani "büyük kazanç" değil, "küçük ama nispeten sindirilebilir kayıp riskiyle
+yavaş birikim" profili. Bu, isteğinizle (az kazanç + süreklilik) örtüşüyor.
+
+### Pratik öneriler (50.000 TL için)
+
+1. **Tek hisseye yatırmayın.** `screen_tickers.py` ile 4-5 farklı BIST hissesinde
+   (`--params-file en_iyi_parametreler_muhafazakar.json`) ayrı ayrı test edip
+   sermayeyi birkaçına bölmek, tek bir hissenin kötü bir döneminin tüm
+   sermayeyi etkilemesini azaltır.
+2. **`rolling_windows.py` ile dağılıma bakın**, tek bir backtest sonucuna değil
+   — "ortalama ne olurdu" değil "en kötü pencerede ne olurdu" sorusuna cevap
+   arayın (bkz. `THYAO_IS_pencere_analizi.csv` örneği).
+3. **Periyodik olarak yeniden optimize edin** (ör. 3-6 ayda bir) — piyasa
+   rejimi değiştikçe (bkz. 4b'deki chunk bazlı Sharpe'ların son dönemde
+   düşme eğilimi) sabit parametreler zamanla eskiyebilir.
+4. **`notify.py` + Görev Zamanlayıcı** ile sinyalleri takip edin ama işlemleri
+   MANUEL onaylayın — bu araç otomatik emir göndermez, sadece bildirir; son
+   kararı siz verirsiniz.
+5. Bu motor bir **yatırım danışmanı değildir**; "az kazanç + süreklilik"
+   hedefi geçmiş veride gözlemlendi, gelecekte garanti değildir. Gerçek
+   parayla başlamadan önce mutlaka demo/kağıt hesapta birkaç ay izleyin.
+
+---
+
+## 5e. "Orta" Profil: Trend Modunun Çıkış Mantığı + Küçük Pozisyon
+
+`--mode conservative` ve `--mode robust`'ın karşılaştırmasında robust modun
+Sharpe/CAGR açısından beklenenden zayıf kaldığı görüldü. Nedeni araştırıldığında
+asıl fark **pozisyon büyüklüğü değil, çıkış mantığıydı**: trend modun geniş
+trailing-stop'u (`trailing_atr_mult=6.0`) ve sert-eşikli çıkışı (`sell_th=-0.45`)
+kârı erken kesmek yerine trendi sonuna kadar takip ediyor.
+
+`en_iyi_parametreler_orta.json`, trend modun bulduğu indikatör/çıkış
+parametrelerini aynen kullanıp **sadece pozisyon büyüklüğünü %40'tan %15'e**
+düşürür (position sizing ile getiri/düşüş neredeyse doğrusal ölçekleniyor,
+Sharpe/kazanma oranı/işlem zamanlaması DEĞİŞMİYOR - bkz. aşağıdaki tablo).
+
+```bash
+python main.py --ticker THYAO.IS --interval 1h --capital 50000 \
+    --params-file en_iyi_parametreler_orta.json
+```
+
+**THYAO.IS / ASELS.IS, 2023-10-12 .. 2026-09-01 (~2.89 yıl), 50.000 TL:**
+
+| Mod | THYAO CAGR | THYAO max düşüş | THYAO Sharpe | ASELS CAGR | ASELS max düşüş |
+|---|---|---|---|---|---|
+| conservative (%8 pozisyon) | %0.96 | -%1.5 | 1.14 | %5.34 | -%3.89 |
+| robust (%15 pozisyon, orijinal çıkış) | %1.73 | -%2.96 | 1.20 | %8.53 | -%4.85 |
+| **orta (trend çıkışı + %15 pozisyon)** | **%2.74** | **-%3.29** | **1.54** | **%9.52** | **-%7.18** |
+| trend (%40 pozisyon, orijinal) | %7.05 | -%8.6 | 1.54 | %25.87 | -%17.83 |
+
+"Orta" profil, robust moddan hem daha yüksek Sharpe hem daha yüksek CAGR
+veriyor - biraz daha yüksek (ama hâlâ tek haneli) bir düşüş karşılığında.
+Pozisyon büyüklüğü `position_size_pct` alanından elle %10-%25 arasında
+ayarlanıp kendi risk toleransınıza göre bu doğrusal ölçeklemeden
+yararlanabilirsiniz (bkz. tablo yukarıdaki bölümlerde farklı yüzdeler için).
+
+> Bu üçü de (conservative/robust/orta/trend) aynı geçmiş veri üzerinde
+> ölçüldü; hiçbiri gelecekteki performansı garanti etmez ve hiçbiri
+> Türk Lirası enflasyonuna karşı bir koruma sağlamaz (bkz. 5d'deki
+> enflasyon notu).
 
 ---
 
