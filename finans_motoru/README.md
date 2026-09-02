@@ -345,6 +345,14 @@ python notify.py --ticker THYAO.IS --interval 1h --config notify_config.json --t
 kullanımda `--test` OLMADAN çalıştırın - o zaman sadece sinyal değiştiğinde
 bildirim gelir.
 
+**Birden fazla hisseyi tek çalıştırmada takip etmek** için `--tickers`
+(virgülle ayrılmış) kullanın - her hisse kendi durumunu ayrı dosyada tutar,
+sinyali değişen HER hisse için ayrı bildirim gider:
+```bash
+python notify.py --tickers "THYAO.IS,ASELS.IS,SISE.IS,KCHOL.IS,BIMAS.IS" --interval 1h \
+    --config notify_config.json --params-file en_iyi_parametreler_orta.json
+```
+
 ### Kurulum (E-posta - opsiyonel)
 
 Gmail kullanıyorsanız normal şifreniz çalışmaz; **Uygulama Şifresi** (App
@@ -366,8 +374,10 @@ Zamanlayıcı**sı (Task Scheduler) ile her saat başı tetiklenmesi gerekir:
 5. **Eylem** (Action) = "Bir programı başlat" (Start a program):
    - Program/script: `C:\Users\sukru\OneDrive\Desktop\Omen\finans_motoru\.venv\Scripts\python.exe`
      (venv'in tam yolu; `py` yerine venv'in python.exe'sini kullanmak daha güvenilirdir)
-   - Bağımsız değişkenler (Arguments):
+   - Bağımsız değişkenler (Arguments) - tek hisse:
      `notify.py --ticker THYAO.IS --interval 1h --config notify_config.json --params-file en_iyi_parametreler.json`
+   - Bağımsız değişkenler (Arguments) - birden fazla hisse (bkz. 5c):
+     `notify.py --tickers "THYAO.IS,ASELS.IS,SISE.IS,KCHOL.IS,BIMAS.IS" --interval 1h --config notify_config.json --params-file en_iyi_parametreler_orta.json`
    - Başlangıç konumu (Start in): `C:\Users\sukru\OneDrive\Desktop\Omen\finans_motoru`
 6. Kaydedin. İsterseniz görevi sağ tıklayıp **Çalıştır** (Run) ile hemen test edin.
 
