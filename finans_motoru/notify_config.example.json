@@ -1,0 +1,15 @@
+{
+  "telegram": {
+    "enabled": true,
+    "bot_token": "BOTFATHER_DAN_ALDIGIN_TOKEN",
+    "chat_id": "GETUPDATES_ILE_BULDUGUN_SAYI"
+  },
+  "email": {
+    "enabled": false,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "username": "seninmailin@gmail.com",
+    "password": "gmail-uygulama-sifresi",
+    "to": "bildirim-almak-istedigin@mail.com"
+  }
+}

@@ -7,6 +7,13 @@ __pycache__/
 rapor_*.csv
 rapor_*.png
 karsilastirma.csv
+hisse_taramasi.csv
+*_pencere_analizi.csv
+en_iyi_parametreler*.json
+son_sinyal_*.json
 
 # Ortam / gizli bilgi dosyaları (varsa)
 .env
+
+# GERÇEK Telegram/e-posta bilgilerinizi içerir - ASLA GitHub'a yüklemeyin!
+notify_config.json
