@@ -27,7 +27,7 @@ from data_fetcher import fetch_ohlcv, normalize_interval, default_trailing_atr_m
 from signal_engine import compute_signals
 from backtest import run_backtest
 
-DEFAULT_TICKERS = ["THYAO.IS", "ASELSAN.IS", "SISE.IS", "KCHOL.IS", "BIMAS.IS"]
+DEFAULT_TICKERS = ["THYAO.IS", "ASELS.IS", "SISE.IS", "KCHOL.IS", "BIMAS.IS"]
 
 
 def load_params(path: str | None) -> dict:
